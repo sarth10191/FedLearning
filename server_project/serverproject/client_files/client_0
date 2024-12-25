@@ -1,0 +1,72 @@
+from flask import Flask, request, jsonify
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required
+from models import db, Book, Member
+from schemas import BookSchema, MemberSchema
+from auth import register_member, login_member
+
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///library.db'
+app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
+db.init_app(app)
+jwt = JWTManager(app)
+
+with app.app_context():
+    db.create_all()
+
+@app.route('/register', methods=['POST'])
+def register():
+    return register_member(request.json)
+
+@app.route('/login', methods=['POST'])
+def login():
+    return login_member(request.json)
+
+@app.route('/books', methods=['POST'])
+@jwt_required()
+def add_book():
+    book_schema = BookSchema()
+    book = book_schema.load(request.json)
+    db.session.add(book)
+    db.session.commit()
+    return book_schema.dump(book), 201
+
+@app.route('/books/<int:book_id>', methods=['GET'])
+@jwt_required()
+def get_book(book_id):
+    book = Book.query.get_or_404(book_id)
+    return BookSchema().dump(book)
+
+@app.route('/books', methods=['GET'])
+@jwt_required()
+def get_books():
+    page = request.args.get('page', 1, type=int)
+    search = request.args.get('search', '', type=str)
+    query = Book.query.filter(Book.title.contains(search) | Book.author.contains(search))
+    books = query.paginate(page=page, per_page=5)
+    return BookSchema(many=True).dump(books.items), 200
+
+@app.route('/books/<int:book_id>', methods=['PUT'])
+@jwt_required()
+def update_book(book_id):
+    book = Book.query.get_or_404(book_id)
+    book_schema = BookSchema()
+    updated_book = book_schema.load(request.json, instance=book)
+    db.session.commit()
+    return book_schema.dump(updated_book)
+
+@app.route('/books/<int:book_id>', methods=['DELETE'])
+@jwt_required()
+def delete_book(book_id):
+    book = Book.query.get_or_404(book_id)
+    db.session.delete(book)
+    db.session.commit()
+    return '', 204
+
+@app.route('/members', methods=['GET'])
+@jwt_required()
+def get_members():
+    members = Member.query.all()
+    return MemberSchema(many=True).dump(members)
+
+if __name__ == '__main__':
+    app.run(debug=True, port = 8000)
