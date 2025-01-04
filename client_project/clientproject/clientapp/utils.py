@@ -1,6 +1,11 @@
 from .signals import load_to_csv, training_finished, start_training, data_loaded
 import os
 import csv
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import models
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
 
 csv_file_path = "../output.csv"
 DATA_PATH = "D:/research mp 2025/Projects/client_1"
@@ -43,13 +48,33 @@ def load_imagepaths_to_csv(sender, **kwargs):
 
 load_to_csv.connect(load_imagepaths_to_csv)
 
-def train_and_save_model(sender, **kwargs):
+
+def load_images_from_csv(csv_file_path = csv_file_path):
+    images = []
+    df = pd.read_csv(csv_file_path)
+    for path in df["image_path"]:
+        image = load_img(path, target_size = (50,50))
+        image_array = img_to_array(image)/255.0
+        images.append(image)
+    images = np.array(images)
+    labels = df["classification"]
+    return images, labels
+#https://chatgpt.com/share/67790c6a-f924-8001-a97f-c2951891533a
+#SAVE DATA IN LOADED FORMAT ON DISK TO SAVE SPACE.
+#LOAD AND RESAVE WHEN ADDING MORE DATA.
+
+
+def train_and_save_model(sender, path,  **kwargs):
     """
     Read class, imagepaths from the CSV file and load images from paths. 
     Train model and save it into h5 file. 
     Send a signal to let server know knowledge training is done.
     """
-    print("Inside function train_and_save_model. Training is finished.")
+    model = models.load_model(path)
+    data, labels = load_images_from_csv()
+    data = tf.data.Dataset.from_tensor_slices((data, labels))
+    model.fit(data, epochs = 1)
+    model.save(path)
     training_finished.send(sender=None)
 
 start_training.connect(train_and_save_model)

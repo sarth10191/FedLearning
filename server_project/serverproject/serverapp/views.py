@@ -11,14 +11,18 @@ from .models import ClientInfo
 from django.core.files import File
 import requests
 import asyncio
+from .utils import ClientsRoundManager
 from asgiref.sync import sync_to_async
 from .signals import trainingStrated
 from django.views.decorators.csrf import csrf_exempt
+from .utils import aggregate_client_files, create_and_save_model
 # Create your views here.
 
 MODEL_DIR = "..\serverproject\client_files"
 
+num_client_files_recieved = 0
 
+# instead of having signals have a parent function calling all the functions one after another.
 class RegisterClientView(APIView):
     """
     Handle clinet registeration.
@@ -32,33 +36,46 @@ class RegisterClientView(APIView):
     
 def select_clients():
     clients = ClientInfo.objects.all()
-    clients = clients.filter(status="Active")
+    # clients = clients.filter(status="Active")
     return clients
 
-async def startRound(request):
+async def startRound():
+    """
+    Start rounds. 
+    Select clients and send them requests to start training. 
+    Depending on response consider client active or inactive for current round. 
+    """
+    path = "serverproject\server_model\servermodel.h5"
+    create_and_save_model(path=path)
     clients = await sync_to_async(select_clients())
+    selected_clients = []
     try:
         for client in clients:
             client_url = f"http://{client.ip}:{client.port}/start_training/"
+            files = {"file":(open(path, "rb"))}
             response = await requests.post(client_url, data={"message":"Start training model"}, timeout=10)
             if response.status_code == 500:
                 client.status = "Inactive"
                 await sync_to_async(ClientInfo.save(client))
             elif response.status_code == 200:
+                select_clients.append(client)
                 continue
-        trainingStrated.asend(sender = None)
+        """Signal recieved by utility class that keeps a track of clients included in server."""
     except Exception as e:
-        print(e)
+        print(e)    
+    return selected_clients
 
 @csrf_exempt
 async def RecieveFiles(request):
+    """Client will send files here after completing training."""
     if request.method == "POST":
         try:
             client = await sync_to_async(ClientInfo.objects.get)(name=request.POST.get("name"))
-            path = os.path.join(MODEL_DIR, client.name)
+            path = os.path.join(MODEL_DIR, client.name, ".h5")
             file = request.FILES.get("file")
             with open(path, 'wb') as f:
-                content = file.read()
+                content = file.read()#maybe in chunks if this doesnt work. 
+                
                 f.write(content)
             client.model_file = path
             await sync_to_async(client.save)()
@@ -67,82 +84,41 @@ async def RecieveFiles(request):
             return JsonResponse({"Error":f"Error saving client. {e}"}, status = 500)
     else:
         return JsonResponse({"Error":"Method not allowed"}, status = 500)
-
     
 
-    
+async def broadCastFiles(selected_clients:list, path:str):
+    responses = []
+    try:
+        for client in selected_clients:
+            client_url = f"http://{client.ip}:{client.port}/aggregated_file/"
+            file = open(path, "rb")
+            response = await requests.post(client_url,data={"message":"aggregated model"} ,files={"file":file})
+            responses.append((response, client.name))
+            print(response)
+    except Exception as e: 
+        print("Error in fucntion broadcastFiles",e)
+    return responses
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-'''
-# try:
-        #     client_id = request.POST.get("id")
-        #     client = sync_to_async(ClientInfo.objects.get)(id=client_id)
-        #     file = request.FILES.get("file")
-        #     client.model_file = file
-        #     asyncio.to_thread(client.save())
-        #     return Response({"message":"file saved successfully."}, status.HTTP_200_OK)
-        # except Exception as e:
-        #     return Response({"message":e+"Cannot save file"}, status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# async def recieve_models(request):
-#     if request.method == "POST":
-#         try:
-#             client_id = request.POST.get("id")
-#             client = sync_to_async(ClientInfo.objects.get(id=client_id))
-#             if 'file' in request.FILES:
-#                 file = request.FILES['file']
-#                 client.model_file = file
-#                 asyncio.to_thread(client.save())
-#                 return Response({"message":"File saved successfully."}, status.HTTP_200_OK)
-#             else:
-#                 return Response({"message":"File not found."}, status.HTTP_410_GONE)
-#         except Exception as e:
-#             print(e)
-#             return Response({"message":"e. Faield to save file."},status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-    
-    parser_classes = [FormParser, MultiPartParser]
-    def put(self, request, *args, **kwargs):
-        client_id = kwargs.get('id')
+async def RoundManager(request):
+    num_client_files_recieved = 0
+    selected_clients = await startRound()#function to start rounds returns list of clients that accepted message and started training.
+    for i in request.data.get("epochs"):
+        num_client_files_recieved = 0
+        total_clients = len(select_clients)
         try:
-            client_instance = ClientInfo.objects.get(id = client_id)
-        except ClientInfo.DoesNotExist:
-            return Response({'error': 'ClientInfo not found.'}, status=status.HTTP_404_NOT_FOUND)
-        
-        serializer = FileExistsError(instance = client_instance, data = request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-'''
+            await asyncio.wait_for( wait_for_files(total_clients), timeout=50 )
+        #Considering nothing goes wrong, wait till all clients send files. 
+        except asyncio.TimeoutError:
+            print("Timed out. Not all clients sent their files. ")
+        broadcast_path = sync_to_async(aggregate_client_files)(select_clients)#function to aggregate client models and broadcast. 
+        responses = await broadCastFiles()
+        print(responses)
+    num_client_files_recieved = 0
 
 
-        
+async def wait_for_files(total_clients):
+    while num_client_files_recieved<total_clients:
+        await asyncio.sleep(1)
+        print("All files recieved")

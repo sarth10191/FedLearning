@@ -7,6 +7,7 @@ from asgiref.sync import sync_to_async
 from .utils import data_loaded
 from .signals import start_training, training_finished
 # Create your views here.
+from django.http import JsonResponse
 import requests
 SERVER_URL = 'http://127.0.0.1:8000'
     
@@ -15,8 +16,8 @@ def registerToServer(sender, *args, **kwargs):
     endpoint = f"{SERVER_URL}/register/"
     data = {
         "name":"CLIENT001",
-        "ip": "192.168.123.132",
-        "port": 8000
+        "ip": "127.0.0.1",
+        "port": 8001
     }
     try:
         print(f"Attempting to register with endpoint: {endpoint}")
@@ -25,34 +26,27 @@ def registerToServer(sender, *args, **kwargs):
         
         # Print full response details for debugging
         print(f"Response Status Code: {response.status_code}")
-        print(f"Response Headers: {response.headers}")
-        try:
-            print(f"Response Content: {response.text}")
-        except Exception as content_error:
-            print(f"Could not print response content: {content_error}")
-        
-        response.raise_for_status()
         print("Successful Registration Response:", response.json())
     except requests.exceptions.RequestException as e:
         print(f"Failed to register client. Error: {e}")
         # Add more detailed error information
-        import traceback
-        traceback.print_exc()
-
+        
 data_loaded.connect(registerToServer)
 
-def tell_server_training_finished(*args, **kwargs):
+def send_files_to_server(*args, **kwargs):
     endpoint = f'{SERVER_URL}/client_training_status'
+    path = "path to .h5 file saved by client"
     data = {
-        "message": "Client Training Finished",
+        "name": "CLIENT001",
     }
+    files = {"file":(open(path, "rb"))}
     try:
-        response = requests.post(endpoint, data=data)
+        response = requests.post(endpoint, data=data, files=files)
         print("Successfilly informed server training status:", response.json())
     except Exception as e:
         print(f'Failed to register client. Response:{e}')
     
-training_finished.connect(tell_server_training_finished)
+training_finished.connect(send_files_to_server)
 
 
 
@@ -62,26 +56,14 @@ class StartTrainingView(APIView):
     The signal is consumed by helper functions to load data train model and save the model file. 
     """
     def post(self, request, *args, **kwargs):
+        path = "clientproject/my_model/my_model.h5"
         try:
-            start_training.send(sender=self.__class__)
+            file = request.FILES.get("file")
+            with open(path, "rb") as myfile:
+                content = file.read()
+                myfile.write(content)
+            start_training.send(sender=self.__class__, path = path)
             return Response({"message": "Started loading data."}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"message":"Can't train.", "error":e}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
-async def RecieveFiles(request):
-    if request.method == "POST":
-        try:
-            client = await sync_to_async(Client.objects.get)(name=request.POST.get("name"))
-            path = os.path.join(MODEL_DIR, client.name)
-            file = request.FILES.get("file")
-            with open(path, 'wb') as f:
-                content = file.read()
-                f.write(content)
-            client.filepath = path
-            await sync_to_async(client.save)()
-            return JsonResponse({"saved_file":"successfilly"}, status=200)
-        except Exception as e:
-            return JsonResponse({"Error":f"Error saving client. {e}"}, status = 500)
-    else:
-        return JsonResponse({"Error":"Method not allowed"}, status = 500)
-

@@ -2,6 +2,7 @@ from django.apps import AppConfig
 from .signals import load_to_csv, data_loaded
 from .views import registerToServer
 from . import utils
+from .signals import *
 class ClientappConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'clientapp'
